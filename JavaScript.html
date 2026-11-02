@@ -1,0 +1,1373 @@
+<script>
+/* =====================================================================
+   KHOIRUL INSAN APP — Client-side logic
+   ===================================================================== */
+
+const BULAN_ID = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
+const HARI_ID  = ['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'];
+
+let STATE = {
+  beranda: null,
+  suratList: null
+};
+
+// ---------------------------------------------------------------------
+// Wrapper Promise untuk google.script.run
+// ---------------------------------------------------------------------
+function api(fnName, ...args) {
+  return new Promise((resolve, reject) => {
+    google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler(err => { console.error(fnName, err); reject(err); })
+      [fnName](...args);
+  });
+}
+
+function fmtRupiah(n) {
+  n = Number(n) || 0;
+  return 'Rp' + n.toLocaleString('id-ID');
+}
+
+function fmtTanggal(tgl) {
+  if (!tgl) return '';
+  const d = new Date(tgl);
+  if (isNaN(d)) return tgl;
+  return d.getDate() + ' ' + BULAN_ID[d.getMonth()] + ' ' + d.getFullYear();
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2400);
+}
+
+function esc(s) {
+  return (s == null ? '' : String(s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Ubah URL (http/https/www) di dalam teks jadi tautan biru yang bisa diklik, buka tab baru.
+// Teks tetap di-escape dulu (aman dari HTML/XSS), baru URL-nya dibungkus <a>.
+function linkify(text) {
+  const escaped = esc(text);
+  const urlRegex = /((https?:\/\/|www\.)[^\s<]+|\b[a-zA-Z0-9-]+\.(com|id|co\.id|org|net|blogspot\.com)(\/[^\s<]*)?)/gi;
+  return escaped.replace(urlRegex, (match) => {
+    const href = match.startsWith('http') ? match : 'https://' + match;
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer" style="color:var(--primary-dark);font-weight:700;text-decoration:underline;">${match}</a>`;
+  });
+}
+
+// ---------------------------------------------------------------------
+// Router sederhana berbasis hash
+// ---------------------------------------------------------------------
+window.addEventListener('hashchange', route);
+
+const bottomNavEl = document.getElementById('bottom-nav');
+if (bottomNavEl) {
+  bottomNavEl.addEventListener('click', (e) => {
+    const item = e.target.closest('.nav-item');
+    if (!item) return;
+    location.hash = '#' + item.dataset.tab;
+  });
+}
+
+function route() {
+  const hash = location.hash.replace('#', '') || 'beranda';
+  const [page, param] = hash.split('/');
+  updateActiveNav(page);
+  window.scrollTo(0, 0);
+
+  const routes = {
+    beranda: renderBeranda,
+    quran: () => param ? renderSuratDetail(param) : renderSuratList(),
+    tasbih: renderTasbih,
+    akun: renderAkun,
+    kajian: renderKajianList,
+    artikel: () => param ? renderArtikelDetail(param) : renderArtikelList(),
+    infaq: renderInfaq,
+    keuangan: renderKeuangan,
+    qurban: renderQurban,
+    petugas: renderPetugas,
+    pengumuman: renderPengumuman,
+    kalender: renderKalender,
+    doa: renderDoaList,
+    donasi: () => param ? renderDonasiDetail(param) : renderDonasiList(),
+    zakat: renderZakat
+  };
+  (routes[page] || renderBeranda)();
+}
+
+function updateActiveNav(page) {
+  const mainTabs = ['beranda', 'quran', 'tasbih', 'akun'];
+  document.querySelectorAll('.nav-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.tab === page || (!mainTabs.includes(page) && el.dataset.tab === 'beranda'));
+  });
+}
+
+function setContent(html) {
+  document.getElementById('page-content').innerHTML = html;
+}
+
+function subPageHeader(title, backHash) {
+  return `<div class="page-header">
+    <div class="back-btn" onclick="location.hash='${backHash || 'beranda'}'">←</div>
+    <div class="page-title">${esc(title)}</div>
+  </div>`;
+}
+
+// =======================================================================
+// BERANDA
+// =======================================================================
+async function renderBeranda() {
+  setContent(`<div class="content" style="margin-top:0;"><div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div>Memuat data…</div></div>`);
+  try {
+    const data = await api('getBerandaData');
+    STATE.beranda = data;
+    setContent(buildBerandaHTML(data));
+    startCountdown(data.jadwal);
+  } catch (e) {
+    setContent(`<div class="content"><div class="empty-state">😕 Gagal memuat data. Coba lagi.</div></div>`);
+  }
+}
+
+function buildBerandaHTML(data) {
+  const cfg = data.config || {};
+  const j = data.jadwal && data.jadwal.jadwal;
+  const namaHari = data.jadwal ? data.jadwal.hari : '';
+
+  const waktuList = j ? [
+    { label: 'Subuh', val: j.subuh },
+    { label: 'Dzuhur', val: j.dzuhur },
+    { label: 'Ashar', val: j.ashar },
+    { label: 'Maghrib', val: j.maghrib },
+    { label: 'Isya', val: j.isya }
+  ] : [];
+
+  let namaTampil = 'Jamaah';
+  if (data.user) namaTampil = data.user.split('@')[0];
+  if (cfg.NamaMasjid) namaTampil = 'Jamaah ' + cfg.NamaMasjid;
+
+  const layanan = [
+    { icon:'💚', bg:'#e6f7ee', color:'#0f9d58', label:'Infaq', hash:'infaq' },
+    { icon:'💰', bg:'#fff4e5', color:'#d97706', label:'Keuangan', hash:'keuangan' },
+    { icon:'🗓️', bg:'#eef2ff', color:'#4f46e5', label:'Kalender', hash:'kalender' },
+    { icon:'🎓', bg:'#fde8ef', color:'#db2777', label:'E-Learning', url:'https://lmskhoirulinsan.blogspot.com/?m=0' },
+    { icon:'🤝', bg:'#fff7e6', color:'#b45309', label:'Donasi', hash:'donasi' },
+    { icon:'📖', bg:'#fdeee6', color:'#c2410c', label:'Tilawah Berkelompok', url:'https://tilawahkhoirulinsan.blogspot.com/?m=0' },
+    { icon:'🤲', bg:'#e6f2ff', color:'#1d4ed8', label:'Doa Harian', hash:'doa' },
+    { icon:'📱', bg:'#f3e8ff', color:'#7e22ce', label:'Kalkulator Zakat', hash:'zakat' },
+    { icon:'📚', bg:'#e6f7ee', color:'#0f9d58', label:'E-Book Islami', url:'https://eperpuskhoirulinsan.blogspot.com/?m=0' },
+    { icon:'✍️', bg:'#eef2ff', color:'#4f46e5', label:'Kirim Artikel', url:'https://artikelkhoirulinsan.blogspot.com/?m=0' },
+    { icon:'🎮', bg:'#fde8ef', color:'#db2777', label:'Games Islami', url:'https://gameskhoirulinsan.blogspot.com/?m=0' },
+    { icon:'🎙️', bg:'#fff4e5', color:'#d97706', label:'KIARA', url:'https://kiara-app.blogspot.com/?m=0' }
+];
+
+  return `
+    <div class="header-green">
+      <div class="header-top">
+        <div>
+          <div class="header-greet">Assalamu'alaikum,</div>
+          <div class="header-name">${esc(namaTampil)}</div>
+        </div>
+        <div class="bell-btn" onclick="location.hash='pengumuman'">
+          🔔
+          ${data.pengumuman && data.pengumuman.some(p => p.penting) ? '<div class="bell-badge"></div>' : ''}
+        </div>
+      </div>
+
+      <div class="prayer-card">
+        <div class="prayer-loc">
+          <span>📍 ${esc(cfg.Alamat || '-')}</span>
+          <span class="prayer-clock" id="jam-sekarang">--:--:--</span>
+        </div>
+        ${j ? `
+        <div class="prayer-next">Menuju <b id="next-prayer-label">-</b></div>
+        <div class="prayer-countdown" id="countdown">--:--:--</div>
+        <div class="prayer-times" id="prayer-times">
+          ${waktuList.map(w => `
+            <div class="prayer-time-item" data-label="${w.label}">
+              <div>${w.label}</div><b>${w.val || '-'}</b>
+            </div>`).join('')}
+        </div>` : `<div class="empty-state" style="padding:10px 0;">Jadwal sholat tidak tersedia</div>`}
+      </div>
+    </div>
+
+    <div class="content">
+
+      ${data.petugas ? `
+      <div class="section">
+        <div class="petugas-card">
+          <div class="petugas-head">
+            <span>🕌 Petugas Jumat Ini</span>
+            <span class="petugas-date">${fmtTanggal(data.petugas.tanggal)}</span>
+          </div>
+          <div class="petugas-grid">
+            <div class="petugas-item"><div class="label">Khatib</div><div class="val">${esc(data.petugas.khatib)}</div></div>
+            <div class="petugas-item"><div class="label">Imam</div><div class="val">${esc(data.petugas.imam)}</div></div>
+            <div class="petugas-item"><div class="label">Muadzin</div><div class="val">${esc(data.petugas.muadzin)}</div></div>
+          </div>
+        </div>
+      </div>` : ''}
+
+            <div class="section">
+        <div class="section-title" style="margin-bottom:10px;">Layanan Masjid</div>
+        <div class="layanan-grid">
+          ${layanan.map(l => `
+            <div class="layanan-item" onclick="${l.url ? `window.open('${l.url}','_blank')` : `location.hash='${l.hash}'`}">
+              <div class="layanan-icon" style="background:${l.bg};">${l.icon}</div>
+              <div class="layanan-label">${l.label}</div>
+            </div>`).join('')}
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-head">
+          <div class="section-title">Kajian Terdekat</div>
+          <div class="section-link" onclick="location.hash='kajian'">Lihat Semua</div>
+        </div>
+        ${data.kajian && data.kajian.length ? data.kajian.map(kajianCardHTML).join('') :
+          `<div class="empty-state">Belum ada jadwal kajian terbaru</div>`}
+      </div>
+
+      <div class="section">
+        <div class="section-head">
+          <div class="section-title">Artikel Terbaru</div>
+          <div class="section-link" onclick="location.hash='artikel'">Lainnya</div>
+        </div>
+        <div class="artikel-scroll">
+          ${data.artikel && data.artikel.length ? data.artikel.map(artikelCardHTML).join('') :
+            `<div class="empty-state">Belum ada artikel</div>`}
+        </div>
+      </div>
+
+      ${data.nasihat ? `
+      <div class="section">
+        <div class="nasihat-card">
+          <div class="nasihat-label">NASIHAT HARIAN</div>
+          <div class="nasihat-text">"${esc(data.nasihat.teks)}"</div>
+          <div class="nasihat-sumber">(${esc(data.nasihat.sumber)})</div>
+          <div class="nasihat-actions">
+            <div class="btn-pill btn-wa" onclick="shareNasihat('${esc(data.nasihat.teks).replace(/'/g,"\\'")}')">📱 Share WA</div>
+            <div class="btn-pill btn-ig" onclick="showToast('Simpan gambar lalu bagikan ke IG Story 📸')">📷 IG Story</div>
+          </div>
+        </div>
+      </div>` : ''}
+
+    </div>
+  `;
+}
+
+function kajianCardHTML(k) {
+  const d = new Date(k.tanggal);
+  return `<div class="list-card">
+    <div class="date-box">
+      <div class="mon">${isNaN(d) ? '' : BULAN_ID[d.getMonth()]}</div>
+      <div class="day">${isNaN(d) ? '?' : d.getDate()}</div>
+    </div>
+    <div>
+      <div class="list-card-title">${esc(k.judul)}</div>
+      <div class="list-card-meta">
+        <span>🕐 ${esc(k.jam)}</span>
+        <span>🎙️ ${esc(k.pemateri)}</span>
+      </div>
+    </div>
+  </div>`;
+}
+
+function artikelCardHTML(a) {
+  return `<div class="artikel-card" onclick="location.hash='artikel/${a.id}'">
+    <img src="${esc(a.gambar_url)}" onerror="this.style.display='none'">
+    <div class="artikel-body">
+      <div class="artikel-kategori">${esc(a.kategori)}</div>
+      <div class="artikel-judul">${esc(a.judul)}</div>
+    </div>
+  </div>`;
+}
+
+function shareNasihat(teks) {
+  const url = 'https://wa.me/?text=' + encodeURIComponent('"' + teks + '"\n\nDibagikan dari Khoirul Insan App 🕌');
+  window.open(url, '_blank');
+}
+
+// --- Countdown jadwal sholat (live) ---
+let countdownTimer = null;
+function startCountdown(jadwalObj) {
+  if (countdownTimer) clearInterval(countdownTimer);
+  const j = jadwalObj && jadwalObj.jadwal;
+  if (!j) return;
+
+  const urutan = [
+    { label: 'Subuh', val: j.subuh },
+    { label: 'Dzuhur', val: j.dzuhur },
+    { label: 'Ashar', val: j.ashar },
+    { label: 'Maghrib', val: j.maghrib },
+    { label: 'Isya', val: j.isya }
+  ];
+
+  function tick() {
+    const now = new Date();
+    const jamEl = document.getElementById('jam-sekarang');
+    if (jamEl) jamEl.textContent = now.toLocaleTimeString('id-ID', { hour12: false });
+
+    let next = null;
+    for (const w of urutan) {
+      const [h, m] = (w.val || '00:00').split(':').map(Number);
+      const t = new Date(now); t.setHours(h, m, 0, 0);
+      if (t > now) { next = { ...w, time: t }; break; }
+    }
+    if (!next) {
+      // sudah lewat isya -> hitung ke subuh besok
+      const [h, m] = (urutan[0].val || '04:00').split(':').map(Number);
+      const t = new Date(now); t.setDate(t.getDate() + 1); t.setHours(h, m, 0, 0);
+      next = { label: 'Subuh', time: t };
+    }
+
+    const diff = Math.max(0, next.time - now);
+    const hh = String(Math.floor(diff / 3600000)).padStart(2, '0');
+    const mm = String(Math.floor((diff % 3600000) / 60000)).padStart(2, '0');
+    const ss = String(Math.floor((diff % 60000) / 1000)).padStart(2, '0');
+
+    const cd = document.getElementById('countdown');
+    if (cd) cd.textContent = `-${hh}:${mm}:${ss}`;
+    const lbl = document.getElementById('next-prayer-label');
+    if (lbl) lbl.textContent = next.label;
+
+    document.querySelectorAll('.prayer-time-item').forEach(el => {
+      el.classList.toggle('active', el.dataset.label === next.label);
+    });
+  }
+  tick();
+  countdownTimer = setInterval(tick, 1000);
+}
+
+// =======================================================================
+// AL-QUR'AN
+// =======================================================================
+async function renderSuratList() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  setContent(subPageHeader("Al-Qur'an", '#beranda') + `
+    <div class="content" style="margin-top:0;">
+      <div class="search-bar">
+        <span>🔍</span>
+        <input id="surat-search" placeholder="Cari nama surat..." oninput="filterSurat(this.value)">
+      </div>
+      <div id="terakhir-dibaca-slot"></div>
+      <div id="surat-list-slot"><div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div>Memuat daftar surat…</div></div>
+    </div>
+  `);
+
+  try {
+    const [list, terakhir] = await Promise.all([
+      STATE.suratList ? Promise.resolve(STATE.suratList) : api('getDaftarSurat'),
+      api('getTerakhirDibaca')
+    ]);
+    STATE.suratList = list;
+
+    if (terakhir) {
+      document.getElementById('terakhir-dibaca-slot').innerHTML = `
+        <div class="petugas-card" style="margin-bottom:16px;" onclick="location.hash='quran/${terakhir.nomorSurat}'">
+          <div class="petugas-head"><span>📖 Terakhir Dibaca</span><span class="petugas-date">Lanjutkan</span></div>
+          <div style="margin-top:10px;font-size:14px;font-weight:700;">${esc(terakhir.namaSurat)} - Ayat ${esc(terakhir.nomorAyat)}</div>
+        </div>`;
+    }
+    renderSuratListItems(list);
+  } catch (e) {
+    document.getElementById('surat-list-slot').innerHTML = `<div class="empty-state">😕 Gagal memuat daftar surat. Periksa koneksi internet.</div>`;
+  }
+}
+
+function renderSuratListItems(list) {
+  document.getElementById('surat-list-slot').innerHTML = list.map(s => `
+    <div class="surat-card" onclick="location.hash='quran/${s.nomor}'">
+      <div class="surat-num">${s.nomor}</div>
+      <div class="surat-info">
+        <div class="surat-name">${esc(s.namaLatin)}</div>
+        <div class="surat-meta">${esc(s.tempatTurun)} • ${s.jumlahAyat} Ayat • ${esc(s.arti)}</div>
+      </div>
+      <div class="surat-arab">${esc(s.nama)}</div>
+    </div>
+  `).join('') || `<div class="empty-state">Surat tidak ditemukan</div>`;
+}
+
+function filterSurat(keyword) {
+  if (!STATE.suratList) return;
+  const k = keyword.toLowerCase().trim();
+  const filtered = !k ? STATE.suratList : STATE.suratList.filter(s =>
+    s.namaLatin.toLowerCase().includes(k) || s.arti.toLowerCase().includes(k) || String(s.nomor) === k);
+  renderSuratListItems(filtered);
+}
+
+async function renderSuratDetail(nomor) {
+  setContent(subPageHeader('Memuat...', '#quran') + `
+    <div class="content" style="margin-top:0;"><div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div>Memuat surat…</div></div>
+  `);
+  try {
+    const [s, tafsirData] = await Promise.all([
+      api('getDetailSurat', nomor),
+      api('getTafsirSurat', nomor).catch(() => null) // tafsir opsional, jangan gagalkan halaman kalau error
+    ]);
+    if (!s) { setContent(subPageHeader('Error', '#quran') + `<div class="content"><div class="empty-state">Surat tidak ditemukan</div></div>`); return; }
+
+    const showBismillah = s.nomor !== 1 && s.nomor !== 9;
+
+    // Normalisasi data tafsir jadi map { nomorAyat: teks }, jaga-jaga nama field API sedikit beda
+    const tafsirMap = {};
+    if (tafsirData && Array.isArray(tafsirData.tafsir)) {
+      tafsirData.tafsir.forEach(t => {
+        const noAyat = t.ayat || t.nomorAyat;
+        const teks = t.teks || t.teksIndonesia || t.text;
+        if (noAyat && teks) tafsirMap[noAyat] = teks;
+      });
+    }
+
+    setContent(subPageHeader(s.namaLatin + ' - ' + s.arti, '#quran') + `
+      <div class="content" style="margin-top:0;">
+        <div class="list-card" style="justify-content:space-between;">
+          <div>
+            <div class="list-card-title">${esc(s.namaLatin)} <span style="color:var(--text-muted);font-weight:400;">(${esc(s.arti)})</span></div>
+            <div class="list-card-meta"><span>${esc(s.tempatTurun)}</span><span>${s.jumlahAyat} Ayat</span></div>
+          </div>
+          <div class="surat-arab" style="font-size:24px;">${esc(s.nama)}</div>
+        </div>
+
+        ${showBismillah ? `<div class="bismillah">بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ</div>` : ''}
+
+        <div id="ayat-list">
+          ${s.ayat.map(a => {
+            const tafsirTeks = tafsirMap[a.nomorAyat];
+            return `
+            <div class="ayat-block">
+              <div class="ayat-top">
+                <div class="ayat-num">${a.nomorAyat}</div>
+                <button style="background:none;color:var(--primary);font-size:11px;font-weight:700;" onclick="tandaiTerakhirDibaca(${s.nomor}, '${esc(s.namaLatin).replace(/'/g,"\\'")}', ${a.nomorAyat}, this)">🔖 Tandai</button>
+              </div>
+              <div class="ayat-arab">${a.teksArab}</div>
+              <div class="ayat-latin">${esc(a.teksLatin)}</div>
+              <div class="ayat-terjemah">${a.nomorAyat}. ${esc(a.teksIndonesia)}</div>
+              ${tafsirTeks ? `
+                <div class="tafsir-toggle" onclick="toggleTafsir(this)">📘 Lihat Tafsir</div>
+                <div class="tafsir-box" style="display:none;">${esc(tafsirTeks)}</div>
+              ` : ''}
+            </div>
+          `;}).join('')}
+        </div>
+      </div>
+    `);
+  } catch (e) {
+    setContent(subPageHeader('Error', '#quran') + `<div class="content"><div class="empty-state">😕 Gagal memuat surat. Coba lagi.</div></div>`);
+  }
+}
+
+function toggleTafsir(el) {
+  const box = el.nextElementSibling;
+  const isOpen = box.style.display !== 'none';
+  box.style.display = isOpen ? 'none' : 'block';
+  el.textContent = isOpen ? '📘 Lihat Tafsir' : '📘 Sembunyikan Tafsir';
+}
+
+function tandaiTerakhirDibaca(nomorSurat, namaSurat, nomorAyat, btn) {
+  api('simpanTerakhirDibaca', nomorSurat, namaSurat, nomorAyat).then(() => {
+    showToast('Ditandai sebagai bacaan terakhir ✓');
+  });
+}
+
+// =======================================================================
+// TASBIH
+// =======================================================================
+let tasbihState = { count: 0, target: 33, dzikir: 'Subhanallah' };
+
+async function renderTasbih() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  setContent(`<div class="content" style="margin-top:0;">
+    <div class="section-title" style="text-align:center;padding-top:10px;">📿 Tasbih Digital</div>
+    <div id="tasbih-slot" class="tasbih-wrap"><div class="spinner"></div></div>
+  </div>`);
+
+  try {
+    tasbihState = await api('getTasbihData');
+  } catch (e) {}
+  drawTasbih();
+}
+
+function drawTasbih() {
+  const dzikirOptions = ['Subhanallah', 'Alhamdulillah', 'Allahu Akbar', 'Astaghfirullah', 'La ilaha illallah'];
+  document.getElementById('tasbih-slot').innerHTML = `
+    <div class="tasbih-circle" onclick="tambahTasbih()">
+      <div class="tasbih-count">${tasbihState.count}</div>
+      <div class="tasbih-target">dari target ${tasbihState.target}</div>
+    </div>
+    <div class="tasbih-dzikir">${esc(tasbihState.dzikir)}</div>
+
+    <div class="chip-row" style="margin-top:20px;justify-content:center;">
+      ${dzikirOptions.map(d => `<div class="chip ${tasbihState.dzikir === d ? 'selected' : ''}" onclick="gantiDzikir('${d}')">${d}</div>`).join('')}
+    </div>
+
+    <div class="chip-row" style="margin-top:14px;justify-content:center;">
+      ${[33, 99, 100].map(t => `<div class="chip ${tasbihState.target === t ? 'selected' : ''}" onclick="gantiTarget(${t})">${t}x</div>`).join('')}
+    </div>
+
+    <div class="tasbih-controls">
+      <button class="btn-outline tasbih-btn-reset" onclick="resetTasbih()">🔄 Reset</button>
+    </div>
+    <div style="font-size:11.5px;color:var(--text-muted);margin-top:14px;text-align:center;">Ketuk lingkaran hijau untuk menghitung</div>
+  `;
+}
+
+function tambahTasbih() {
+  tasbihState.count++;
+  if (navigator.vibrate) navigator.vibrate(15);
+  if (tasbihState.count === tasbihState.target) showToast('Alhamdulillah, target tercapai! 🎉');
+  drawTasbih();
+  const circle = document.querySelector('.tasbih-circle');
+  if (circle) {
+    circle.classList.add('getar');
+    setTimeout(() => circle.classList.remove('getar'), 250);
+  }
+  simpanTasbihDebounced();
+}
+function gantiDzikir(d) { tasbihState.dzikir = d; drawTasbih(); simpanTasbihDebounced(); }
+function gantiTarget(t) { tasbihState.target = t; drawTasbih(); simpanTasbihDebounced(); }
+function resetTasbih() { tasbihState.count = 0; drawTasbih(); simpanTasbihDebounced(); }
+
+let tasbihSaveTimeout = null;
+function simpanTasbihDebounced() {
+  clearTimeout(tasbihSaveTimeout);
+  tasbihSaveTimeout = setTimeout(() => {
+    api('saveTasbihData', tasbihState.count, tasbihState.target, tasbihState.dzikir);
+  }, 600);
+}
+
+// =======================================================================
+// AKUN
+// =======================================================================
+async function renderAkun() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  setContent(`<div class="content" style="margin-top:0;"><div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div>Memuat akun…</div></div>`);
+  try {
+    const akun = await api('getAkunSaya');
+    setContent(`
+      <div class="akun-header">
+        <div class="akun-avatar">👤</div>
+        <div style="font-size:16px;font-weight:700;">${akun.email ? esc(akun.email.split('@')[0]) : 'Tamu'}</div>
+        <div class="akun-email">${esc(akun.email || 'Belum login dengan akun Google')}</div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-card"><div class="stat-val">${fmtRupiah(akun.totalInfaq)}</div><div class="stat-label">Total Infaq</div></div>
+        <div class="stat-card"><div class="stat-val">${akun.jumlahTransaksi}</div><div class="stat-label">Transaksi</div></div>
+      </div>
+      <div class="content">
+        <div class="section">
+          <div class="section-title" style="margin-bottom:10px;">Aktivitas Saya</div>
+          <div class="menu-item" onclick="location.hash='infaq'"><div class="icon">💚</div>Riwayat Infaq<div class="arrow">›</div></div>
+          <div class="menu-item" onclick="location.hash='qurban'"><div class="icon">🐐</div>Pendaftaran Qurban<div class="arrow">›</div></div>
+        </div>
+        <div class="section">
+          <div class="section-title" style="margin-bottom:10px;">Lainnya</div>
+          <div class="menu-item" onclick="window.open('https://artikelkhoirulinsan.blogspot.com/','_blank')"><div class="icon">✍️</div>Kirim Artikel<div class="arrow">↗</div></div>
+          <div class="menu-item" onclick="window.open('https://supermentoring.blogspot.com','_blank')"><div class="icon">🧑‍🏫</div>Super Mentoring<div class="arrow">↗</div></div>
+          <div class="menu-item" onclick="location.hash='pengumuman'"><div class="icon">📢</div>Pengumuman<div class="arrow">›</div></div>
+          <div class="menu-item" onclick="location.hash='petugas'"><div class="icon">👥</div>Jadwal Petugas<div class="arrow">›</div></div>
+          <div class="menu-item" onclick="showToast('Khoirul Insan App v1.0')"><div class="icon">ℹ️</div>Tentang Aplikasi<div class="arrow">›</div></div>
+        </div>
+      </div>
+    `);
+  } catch (e) {
+    setContent(`<div class="content"><div class="empty-state">😕 Gagal memuat akun.</div></div>`);
+  }
+}
+
+// =======================================================================
+// KAJIAN
+// =======================================================================
+async function renderKajianList() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  setContent(subPageHeader('Kajian', '#beranda') + `<div class="content" style="margin-top:0;" id="kajian-slot"><div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div>Memuat kajian…</div></div>`);
+  try {
+    const list = await api('getSemuaKajian');
+    document.getElementById('kajian-slot').innerHTML = list.length ? list.map(kajianCardHTML).join('') :
+      `<div class="empty-state"><div class="icon">📅</div>Belum ada jadwal kajian</div>`;
+  } catch (e) {
+    document.getElementById('kajian-slot').innerHTML = `<div class="empty-state">😕 Gagal memuat data</div>`;
+  }
+}
+
+// =======================================================================
+// ARTIKEL
+// =======================================================================
+async function renderArtikelList() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  setContent(subPageHeader('Artikel', '#beranda') + `<div class="content" style="margin-top:0;" id="artikel-slot"><div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div>Memuat artikel…</div></div>`);
+  try {
+    const list = await api('getSemuaArtikel');
+    document.getElementById('artikel-slot').innerHTML = list.length ? `
+      <div style="display:flex;flex-direction:column;gap:12px;">
+      ${list.map(a => `
+        <div class="list-card" style="align-items:flex-start;" onclick="location.hash='artikel/${a.id}'">
+          <img src="${esc(a.gambar_url)}" style="width:72px;height:72px;border-radius:12px;object-fit:cover;flex-shrink:0;" onerror="this.style.display='none'">
+          <div>
+            <div class="artikel-kategori">${esc(a.kategori)}</div>
+            <div class="list-card-title" style="margin-top:3px;">${esc(a.judul)}</div>
+            <div class="list-card-meta"><span>📅 ${fmtTanggal(a.tanggal)}</span></div>
+          </div>
+        </div>
+      `).join('')}
+      </div>` : `<div class="empty-state"><div class="icon">📰</div>Belum ada artikel</div>`;
+  } catch (e) {
+    document.getElementById('artikel-slot').innerHTML = `<div class="empty-state">😕 Gagal memuat data</div>`;
+  }
+}
+
+async function renderArtikelDetail(id) {
+  setContent(subPageHeader('Artikel', '#artikel') + `<div class="content" style="margin-top:0;"><div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div>Memuat…</div></div>`);
+  try {
+    const a = await api('getArtikelById', id);
+    if (!a) { setContent(subPageHeader('Error', '#artikel') + `<div class="content"><div class="empty-state">Artikel tidak ditemukan</div></div>`); return; }
+    setContent(subPageHeader('Artikel', '#artikel') + `
+      <div style="margin-top:0;">
+        <img src="${esc(a.gambar_url)}" style="width:100%;height:200px;object-fit:cover;">
+        <div class="content">
+          <div class="artikel-kategori">${esc(a.kategori)}</div>
+          <div style="font-size:19px;font-weight:800;margin-top:6px;line-height:1.35;">${esc(a.judul)}</div>
+          <div class="list-card-meta" style="margin-top:8px;"><span>✍️ ${esc(a.penulis || 'Admin DKM')}</span><span>📅 ${fmtTanggal(a.tanggal)}</span></div>
+          <div style="font-size:14px;line-height:1.8;margin-top:16px;color:var(--text);">${esc(a.konten).split('\n').map(p => `<p style="margin:0 0 12px;">${p}</p>`).join('')}</div>
+        </div>
+      </div>
+    `);
+  } catch (e) {
+    setContent(subPageHeader('Error', '#artikel') + `<div class="content"><div class="empty-state">😕 Gagal memuat artikel</div></div>`);
+  }
+}
+
+// =======================================================================
+// INFAQ
+// =======================================================================
+let infaqSelectedKategori = null;
+
+async function renderInfaq() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  setContent(subPageHeader('Infaq', '#beranda') + `<div class="content" style="margin-top:0;" id="infaq-slot"><div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div>Memuat…</div></div>`);
+  try {
+    const [kategori, riwayat] = await Promise.all([api('getKategoriInfaq'), api('getRiwayatInfaqSaya')]);
+    infaqSelectedKategori = kategori[0];
+    document.getElementById('infaq-slot').innerHTML = `
+      <div class="section">
+        <div class="form-group">
+          <label class="form-label">Pilih Kategori Infaq</label>
+          <div class="chip-row" id="infaq-kategori-chips">
+            ${kategori.map(k => `<div class="chip ${k === infaqSelectedKategori ? 'selected' : ''}" onclick="pilihKategoriInfaq('${esc(k).replace(/'/g,"\\'")}')">${esc(k)}</div>`).join('')}
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Nominal</label>
+          <div class="chip-row">
+            ${[10000, 25000, 50000, 100000, 250000].map(n => `<div class="chip" onclick="document.getElementById('infaq-nominal').value=${n}">${fmtRupiah(n)}</div>`).join('')}
+          </div>
+          <input class="form-input" id="infaq-nominal" type="number" placeholder="Nominal lainnya" style="margin-top:8px;">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Nama (opsional, kosongkan jika ingin "Hamba Allah")</label>
+          <input class="form-input" id="infaq-nama" placeholder="Nama Anda">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Catatan (opsional)</label>
+          <textarea class="form-textarea" id="infaq-catatan" rows="2" placeholder="Contoh: untuk pembangunan masjid"></textarea>
+        </div>
+        <button class="btn-primary" onclick="submitInfaqForm()">Lanjutkan Infaq</button>
+      </div>
+
+      <div class="section" style="margin-top:24px;">
+        <div class="section-title" style="margin-bottom:10px;">Riwayat Infaq Saya</div>
+        ${riwayat.length ? riwayat.map(r => `
+          <div class="trx-row">
+            <div><div class="trx-kategori">${esc(r.kategori)}</div><div class="trx-ket">${fmtTanggal(r.timestamp)} • ${esc(r.status)}</div></div>
+            <div class="trx-jumlah masuk">${fmtRupiah(r.jumlah)}</div>
+          </div>`).join('') : `<div class="empty-state">Belum ada riwayat infaq. Login dengan akun Google untuk melihat riwayat.</div>`}
+      </div>
+    `;
+  } catch (e) {
+    document.getElementById('infaq-slot').innerHTML = `<div class="empty-state">😕 Gagal memuat data</div>`;
+  }
+}
+
+function pilihKategoriInfaq(k) {
+  infaqSelectedKategori = k;
+  document.querySelectorAll('#infaq-kategori-chips .chip').forEach(el => el.classList.toggle('selected', el.textContent === k));
+}
+
+async function submitInfaqForm() {
+  const nominal = Number(document.getElementById('infaq-nominal').value);
+  if (!nominal || nominal < 1000) { showToast('Masukkan nominal infaq yang valid'); return; }
+  const nama = document.getElementById('infaq-nama').value.trim();
+  const catatan = document.getElementById('infaq-catatan').value.trim();
+
+  try {
+    const res = await api('submitInfaq', { kategori: infaqSelectedKategori, jumlah: nominal, nama, keterangan: catatan, metode: 'QRIS' });
+    setContent(subPageHeader('Konfirmasi Infaq', '#beranda') + `
+      <div class="content" style="margin-top:0;text-align:center;padding-top:20px;">
+        <div style="font-size:48px;">🤲</div>
+        <div style="font-size:17px;font-weight:800;margin-top:14px;">Jazakumullahu Khairan</div>
+        <div style="font-size:13px;color:var(--text-muted);margin-top:6px;">Infaq ${fmtRupiah(nominal)} Anda telah tercatat. Silakan scan QRIS berikut untuk membayar:</div>
+        ${res.qrisUrl ? `<img src="${esc(res.qrisUrl)}" referrerpolicy="no-referrer" style="width:220px;margin:20px auto 0;border-radius:16px;box-shadow:0 4px 16px rgba(0,0,0,0.1);">` : ''}
+        <div class="list-card" style="margin-top:20px;text-align:left;">
+          <div><div class="list-card-title">Konfirmasi setelah bayar</div><div class="list-card-meta">Kirim bukti transfer ke Admin: ${esc(res.waAdmin || '-')}</div></div>
+        </div>
+        <button class="btn-primary" style="margin-top:20px;" onclick="location.hash='beranda'">Kembali ke Beranda</button>
+      </div>
+    `);
+  } catch (e) {
+    showToast('Gagal mengirim infaq, coba lagi');
+  }
+}
+
+// =======================================================================
+// KEUANGAN
+// =======================================================================
+async function renderKeuangan() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  setContent(subPageHeader('Keuangan Masjid', '#beranda') + `<div class="content" style="margin-top:0;" id="keuangan-slot"><div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div>Memuat…</div></div>`);
+  try {
+    const data = await api('getLaporanKeuangan');
+    document.getElementById('keuangan-slot').innerHTML = `
+      <div class="saldo-card">
+        <div class="saldo-label">Saldo Kas Masjid</div>
+        <div class="saldo-val">${fmtRupiah(data.saldo)}</div>
+        <div class="saldo-split">
+          <div class="saldo-split-item"><div class="saldo-split-label">Pemasukan</div><div class="saldo-split-val">${fmtRupiah(data.totalMasuk)}</div></div>
+          <div class="saldo-split-item"><div class="saldo-split-label">Pengeluaran</div><div class="saldo-split-val">${fmtRupiah(data.totalKeluar)}</div></div>
+        </div>
+      </div>
+      <div class="section" style="margin-top:20px;">
+        <div class="section-title" style="margin-bottom:10px;">Transaksi Terbaru</div>
+        ${data.transaksi.length ? data.transaksi.map(t => `
+          <div class="trx-row">
+            <div><div class="trx-kategori">${esc(t.kategori)}</div><div class="trx-ket">${fmtTanggal(t.tanggal)} • ${esc(t.keterangan || '')}</div></div>
+            <div class="trx-jumlah ${t.jenis === 'Masuk' ? 'masuk' : 'keluar'}">${t.jenis === 'Masuk' ? '+' : '-'}${fmtRupiah(t.jumlah)}</div>
+          </div>`).join('') : `<div class="empty-state">Belum ada transaksi</div>`}
+      </div>
+    `;
+  } catch (e) {
+    document.getElementById('keuangan-slot').innerHTML = `<div class="empty-state">😕 Gagal memuat data</div>`;
+  }
+}
+
+// =======================================================================
+// QURBAN
+// =======================================================================
+async function renderQurban() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  setContent(subPageHeader('Qurban', '#beranda') + `
+    <div class="content" style="margin-top:0;">
+      <div class="section">
+        <div class="form-group">
+          <label class="form-label">Nama Pequrban</label>
+          <input class="form-input" id="qurban-nama" placeholder="Nama Anda / Keluarga">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Jenis Hewan</label>
+          <div class="chip-row" id="qurban-jenis-chips">
+            ${['Kambing', 'Domba', 'Sapi (1/7)', 'Sapi (1 ekor)'].map((j,i) => `<div class="chip ${i===0?'selected':''}" onclick="pilihJenisHewan('${j}')">${j}</div>`).join('')}
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Catatan (opsional)</label>
+          <textarea class="form-textarea" id="qurban-catatan" rows="2" placeholder="Contoh: atas nama almarhum..."></textarea>
+        </div>
+        <button class="btn-primary" onclick="submitQurbanForm()">Daftar Qurban</button>
+      </div>
+      <div class="section" style="margin-top:24px;">
+        <div class="section-title" style="margin-bottom:10px;">Daftar Pequrban</div>
+        <div id="qurban-list-slot"><div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div></div></div>
+      </div>
+    </div>
+  `);
+
+  qurbanJenisTerpilih = 'Kambing';
+  try {
+    const list = await api('getDaftarQurban');
+    document.getElementById('qurban-list-slot').innerHTML = list.length ? list.map(q => `
+      <div class="trx-row">
+        <div><div class="trx-kategori">${esc(q.nama)}</div><div class="trx-ket">${esc(q.jenis_hewan)} • ${esc(q.status)}</div></div>
+      </div>`).join('') : `<div class="empty-state">Belum ada pendaftar qurban</div>`;
+  } catch (e) {
+    document.getElementById('qurban-list-slot').innerHTML = `<div class="empty-state">😕 Gagal memuat data</div>`;
+  }
+}
+
+let qurbanJenisTerpilih = 'Kambing';
+function pilihJenisHewan(j) {
+  qurbanJenisTerpilih = j;
+  document.querySelectorAll('#qurban-jenis-chips .chip').forEach(el => el.classList.toggle('selected', el.textContent === j));
+}
+
+async function submitQurbanForm() {
+  const nama = document.getElementById('qurban-nama').value.trim();
+  if (!nama) { showToast('Masukkan nama pequrban'); return; }
+  const catatan = document.getElementById('qurban-catatan').value.trim();
+  try {
+    await api('daftarQurban', { nama, jenisHewan: qurbanJenisTerpilih, jumlah: 1, keterangan: catatan });
+    showToast('Pendaftaran qurban berhasil ✓');
+    renderQurban();
+  } catch (e) {
+    showToast('Gagal mendaftar, coba lagi');
+  }
+}
+
+// =======================================================================
+// PETUGAS
+// =======================================================================
+async function renderPetugas() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  setContent(subPageHeader('Jadwal Petugas Jumat', '#beranda') + `<div class="content" style="margin-top:0;" id="petugas-slot"><div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div>Memuat…</div></div>`);
+  try {
+    const list = await api('getSemuaPetugas');
+    document.getElementById('petugas-slot').innerHTML = list.length ? list.map(p => `
+      <div class="petugas-card" style="margin-bottom:12px;">
+        <div class="petugas-head"><span>🕌 Jumat</span><span class="petugas-date">${fmtTanggal(p.tanggal)}</span></div>
+        <div class="petugas-grid">
+          <div class="petugas-item"><div class="label">Khatib</div><div class="val">${esc(p.khatib)}</div></div>
+          <div class="petugas-item"><div class="label">Imam</div><div class="val">${esc(p.imam)}</div></div>
+          <div class="petugas-item"><div class="label">Muadzin</div><div class="val">${esc(p.muadzin)}</div></div>
+        </div>
+      </div>`).join('') : `<div class="empty-state"><div class="icon">👥</div>Belum ada jadwal petugas</div>`;
+  } catch (e) {
+    document.getElementById('petugas-slot').innerHTML = `<div class="empty-state">😕 Gagal memuat data</div>`;
+  }
+}
+
+// =======================================================================
+// PENGUMUMAN
+// =======================================================================
+async function renderPengumuman() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  setContent(subPageHeader('Pengumuman', '#beranda') + `<div class="content" style="margin-top:0;" id="pengumuman-slot"><div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div>Memuat…</div></div>`);
+  try {
+    const list = await api('getSemuaPengumuman');
+    document.getElementById('pengumuman-slot').innerHTML = list.length ? list.map(p => `
+      <div class="pengumuman-banner">
+        <div class="pengumuman-title">${p.penting ? '📌' : '📄'} ${esc(p.judul)}</div>
+        <div class="pengumuman-body">${linkify(p.isi)}</div>
+        <div class="list-card-meta" style="margin-top:6px;"><span>📅 ${fmtTanggal(p.tanggal)}</span></div>
+      </div>`).join('') : `<div class="empty-state"><div class="icon">📢</div>Belum ada pengumuman</div>`;
+  } catch (e) {
+    document.getElementById('pengumuman-slot').innerHTML = `<div class="empty-state">😕 Gagal memuat data</div>`;
+  }
+}
+
+// =======================================================================
+// KALENDER HIJRIAH & MASEHI
+// =======================================================================
+let KALENDER_STATE = { tampilBulan: null, tampilTahun: null };
+
+async function renderKalender() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  if (KALENDER_STATE.tampilBulan === null) {
+    const now = new Date();
+    KALENDER_STATE.tampilBulan = now.getMonth();
+    KALENDER_STATE.tampilTahun = now.getFullYear();
+  }
+  setContent(subPageHeader('Kalender Hijriah & Masehi', '#beranda') + `
+    <div class="content" style="margin-top:0;" id="kalender-slot"></div>
+  `);
+  drawKalender();
+}
+
+function drawKalender() {
+  const bulan = KALENDER_STATE.tampilBulan;
+  const tahun = KALENDER_STATE.tampilTahun;
+  const firstDay = new Date(tahun, bulan, 1);
+  const lastDay = new Date(tahun, bulan + 1, 0);
+  const jumlahHari = lastDay.getDate();
+  const startOffset = firstDay.getDay(); // 0 = Minggu
+
+  const namaBulanMasehi = firstDay.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+
+  const hijriAwal = getHijri(firstDay);
+  const hijriAkhir = getHijri(lastDay);
+  const labelHijri = hijriAwal.bulan === hijriAkhir.bulan
+    ? `${hijriAwal.namaBulan} ${hijriAwal.tahun} H`
+    : `${hijriAwal.namaBulan} – ${hijriAkhir.namaBulan} ${hijriAkhir.tahun} H`;
+
+  const hariLabel = ['Min','Sen','Sel','Rab','Kam','Jum','Sab'];
+
+  let cells = '';
+  for (let i = 0; i < startOffset; i++) cells += `<div class="kal-cell kal-cell-empty"></div>`;
+
+  for (let d = 1; d <= jumlahHari; d++) {
+    const tgl = new Date(tahun, bulan, d);
+    const hijri = getHijri(tgl);
+    const isSenKam = tgl.getDay() === 1 || tgl.getDay() === 4;
+    const isAyyamulBidh = [13, 14, 15].includes(hijri.tanggal);
+    const isHariIni = isSameDate(tgl, new Date());
+
+    let kelas = 'kal-cell';
+    if (isHariIni) kelas += ' kal-cell-today';
+    if (isAyyamulBidh) kelas += ' kal-cell-bidh';
+    else if (isSenKam) kelas += ' kal-cell-senkam';
+
+    let dot = '';
+    if (isAyyamulBidh) dot = '<div class="kal-puasa-dot kal-puasa-bidh"></div>';
+    else if (isSenKam) dot = '<div class="kal-puasa-dot kal-puasa-senkam"></div>';
+
+    cells += `
+      <div class="${kelas}">
+        <div class="kal-tgl-masehi">${d}</div>
+        <div class="kal-tgl-hijri">${hijri.tanggal}</div>
+        ${dot}
+      </div>`;
+  }
+
+  const totalCell = startOffset + jumlahHari;
+  const sisa = (7 - (totalCell % 7)) % 7;
+  for (let i = 0; i < sisa; i++) cells += `<div class="kal-cell kal-cell-empty"></div>`;
+
+  document.getElementById('kalender-slot').innerHTML = `
+    <div class="kal-header-card">
+      <div class="kal-nav">
+        <button class="kal-nav-btn" onclick="gantiBulanKalender(-1)">‹</button>
+        <div class="kal-nav-title">
+          <div class="kal-bulan-masehi">${namaBulanMasehi}</div>
+          <div class="kal-bulan-hijri">${labelHijri}</div>
+        </div>
+        <button class="kal-nav-btn" onclick="gantiBulanKalender(1)">›</button>
+      </div>
+    </div>
+
+    <div class="kal-grid-head">
+      ${hariLabel.map(h => `<div class="kal-head-item">${h}</div>`).join('')}
+    </div>
+    <div class="kal-grid">${cells}</div>
+
+    <div class="kal-legend">
+      <div class="kal-legend-item"><span class="kal-puasa-dot kal-puasa-senkam"></span> Puasa Sunnah Senin & Kamis</div>
+      <div class="kal-legend-item"><span class="kal-puasa-dot kal-puasa-bidh"></span> Puasa Ayyamul Bidh (13–15 Hijriah)</div>
+    </div>
+
+    <button class="btn-outline" style="margin-top:16px;" onclick="kembaliKeHariIni()">Kembali ke Hari Ini</button>
+    <div style="font-size:10.5px;color:var(--text-muted);margin-top:12px;text-align:center;line-height:1.5;">
+      Tanggal Hijriah adalah estimasi hisab otomatis, bisa berbeda 1 hari dari penetapan resmi Kemenag RI.
+    </div>
+  `;
+}
+
+function gantiBulanKalender(delta) {
+  let b = KALENDER_STATE.tampilBulan + delta;
+  let t = KALENDER_STATE.tampilTahun;
+  if (b < 0) { b = 11; t--; }
+  if (b > 11) { b = 0; t++; }
+  KALENDER_STATE.tampilBulan = b;
+  KALENDER_STATE.tampilTahun = t;
+  drawKalender();
+}
+
+function kembaliKeHariIni() {
+  const now = new Date();
+  KALENDER_STATE.tampilBulan = now.getMonth();
+  KALENDER_STATE.tampilTahun = now.getFullYear();
+  drawKalender();
+}
+
+function isSameDate(a, b) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+// Konversi Masehi -> Hijriah pakai kalender Islamic bawaan browser (Intl API)
+function getHijri(date) {
+  const fmt = new Intl.DateTimeFormat('en-u-ca-islamic', { day: 'numeric', month: 'numeric', year: 'numeric' });
+  const parts = fmt.formatToParts(date);
+  const get = (type) => Number(parts.find(p => p.type === type).value);
+  const namaBulanHijri = [
+    'Muharram', 'Safar', "Rabiul Awal", "Rabiul Akhir", 'Jumadil Awal', 'Jumadil Akhir',
+    'Rajab', "Sya'ban", 'Ramadhan', 'Syawal', "Dzulqa'dah", 'Dzulhijjah'
+  ];
+  const bulan = get('month');
+  return { tanggal: get('day'), bulan, tahun: get('year'), namaBulan: namaBulanHijri[bulan - 1] || ('Bulan ' + bulan) };
+}
+
+// =======================================================================
+// DOA & DZIKIR HARIAN
+// =======================================================================
+let STATE_DOA = { list: null };
+
+async function renderDoaList() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  setContent(subPageHeader("Do'a Harian", '#beranda') + `
+    <div class="content" style="margin-top:0;">
+      <div class="search-bar">
+        <span>🔍</span>
+        <input id="doa-search" placeholder="Cari nama do'a..." oninput="filterDoa(this.value)">
+      </div>
+      <div id="doa-list-slot"><div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div>Memuat do'a…</div></div>
+    </div>
+  `);
+
+  try {
+    const list = STATE_DOA.list ? STATE_DOA.list : await api('getDaftarDoa');
+    STATE_DOA.list = list;
+    renderDoaListItems(list);
+  } catch (e) {
+    document.getElementById('doa-list-slot').innerHTML = `<div class="empty-state">😕 Gagal memuat do'a. Coba lagi.</div>`;
+  }
+}
+
+function ambilFieldDoa_(d) {
+  return {
+    judul: d.nama || 'Do\'a',
+    arab: d.ar || '',
+    latin: d.tr || '',
+    arti: d.idn || '',
+    sumber: d.tentang || '',
+    grup: d.grup || ''
+  };
+}
+
+function renderDoaListItems(list) {
+  document.getElementById('doa-list-slot').innerHTML = list.map((raw, i) => {
+    const d = ambilFieldDoa_(raw);
+    return `
+    <div class="list-card" style="cursor:pointer;flex-direction:column;align-items:stretch;" onclick="toggleDoaDetail(${i})">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <div class="list-card-title">${esc(d.judul)}</div>
+          ${d.grup ? `<div class="list-card-meta"><span>${esc(d.grup)}</span></div>` : ''}
+        </div>
+        <div style="color:var(--text-muted);">▾</div>
+      </div>
+      <div class="doa-detail" id="doa-detail-${i}" style="display:none;margin-top:12px;">
+        ${d.arab ? `<div class="ayat-arab" style="font-size:22px;">${d.arab}</div>` : ''}
+        ${d.latin ? `<div class="ayat-latin">${esc(d.latin)}</div>` : ''}
+        ${d.arti ? `<div class="ayat-terjemah">${esc(d.arti)}</div>` : ''}
+        ${d.sumber ? `<div style="font-size:11px;color:var(--text-muted);margin-top:8px;">📖 ${esc(d.sumber)}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('') || `<div class="empty-state">Do'a tidak ditemukan</div>`;
+}
+
+function toggleDoaDetail(i) {
+  const el = document.getElementById('doa-detail-' + i);
+  if (!el) return;
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+function filterDoa(keyword) {
+  if (!STATE_DOA.list) return;
+  const k = keyword.toLowerCase().trim();
+  const filtered = !k ? STATE_DOA.list : STATE_DOA.list.filter(raw => {
+    const d = ambilFieldDoa_(raw);
+    return d.judul.toLowerCase().includes(k) || d.grup.toLowerCase().includes(k);
+  });
+  renderDoaListItems(filtered);
+}
+
+// =======================================================================
+// DONASI (Campaign dari Spreadsheet + Pembayaran QRIS Tunggal)
+// =======================================================================
+let STATE_DONASI = { list: null, infoPembayaran: null };
+
+async function renderDonasiList() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  setContent(subPageHeader('Donasi', '#beranda') + `
+    <div class="content" style="margin-top:0;" id="donasi-list-slot">
+      <div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div>Memuat campaign donasi…</div>
+    </div>
+  `);
+  try {
+    const list = await api('getSemuaCampaign');
+    STATE_DONASI.list = list;
+    document.getElementById('donasi-list-slot').innerHTML = list.length ? list.map(donasiCardHTML).join('') :
+      `<div class="empty-state"><div class="icon">🤝</div>Belum ada campaign donasi aktif saat ini</div>`;
+  } catch (e) {
+    document.getElementById('donasi-list-slot').innerHTML = `<div class="empty-state">😕 Gagal memuat data donasi</div>`;
+  }
+}
+
+function donasiCardHTML(c) {
+  const target = Number(c.target) || 0;
+  const terkumpul = Number(c.terkumpul) || 0;
+  const persen = target > 0 ? Math.min(100, Math.round((terkumpul / target) * 100)) : 0;
+  return `<div class="donasi-card" onclick="location.hash='donasi/${c.id}'">
+    <img src="${esc(c.gambar_url)}" onerror="this.style.display='none'">
+    <div class="donasi-card-body">
+      <div class="donasi-card-judul">${esc(c.judul)}</div>
+      <div class="donasi-progress-bar"><div class="donasi-progress-fill" style="width:${persen}%;"></div></div>
+      <div class="donasi-progress-meta">
+        <span><b>${fmtRupiah(terkumpul)}</b> terkumpul</span>
+        <span>${persen}%</span>
+      </div>
+      <div class="donasi-progress-meta"><span>dari target ${fmtRupiah(target)}</span></div>
+    </div>
+  </div>`;
+}
+
+async function renderDonasiDetail(id) {
+  setContent(subPageHeader('Donasi', '#donasi') + `
+    <div class="content" style="margin-top:0;"><div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div>Memuat…</div></div>
+  `);
+  try {
+    const [c, info] = await Promise.all([api('getCampaignById', id), api('getInfoPembayaran')]);
+    if (!c) { setContent(subPageHeader('Error', '#donasi') + `<div class="content"><div class="empty-state">Campaign tidak ditemukan</div></div>`); return; }
+    STATE_DONASI.infoPembayaran = info;
+
+    const target = Number(c.target) || 0;
+    const terkumpul = Number(c.terkumpul) || 0;
+    const persen = target > 0 ? Math.min(100, Math.round((terkumpul / target) * 100)) : 0;
+
+    setContent(subPageHeader('Donasi', '#donasi') + `
+      <div style="margin-top:0;">
+        <img src="${esc(c.gambar_url)}" style="width:100%;height:200px;object-fit:cover;" onerror="this.style.display='none'">
+        <div class="content">
+          <div style="font-size:18px;font-weight:800;line-height:1.35;">${esc(c.judul)}</div>
+          <div class="donasi-progress-bar" style="margin-top:14px;"><div class="donasi-progress-fill" style="width:${persen}%;"></div></div>
+          <div class="donasi-progress-meta">
+            <span><b>${fmtRupiah(terkumpul)}</b> terkumpul</span>
+            <span>${persen}%</span>
+          </div>
+          <div class="donasi-progress-meta" style="margin-bottom:14px;">
+            <span>dari target ${fmtRupiah(target)}</span>${c.deadline ? `<span>Berakhir ${fmtTanggal(c.deadline)}</span>` : ''}
+          </div>
+          <div style="font-size:13.5px;line-height:1.7;color:var(--text);margin-top:6px;">${esc(c.deskripsi).split('\n').map(p => `<p style="margin:0 0 10px;">${p}</p>`).join('')}</div>
+
+          <div class="section" style="margin-top:20px;">
+            <div class="form-group">
+              <label class="form-label">Nominal Donasi</label>
+              <div class="chip-row">
+                ${[10000, 25000, 50000, 100000, 250000].map(n => `<div class="chip" onclick="document.getElementById('donasi-nominal').value=${n}">${fmtRupiah(n)}</div>`).join('')}
+              </div>
+              <input class="form-input" id="donasi-nominal" type="number" placeholder="Nominal lainnya" style="margin-top:8px;">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Nama (opsional, kosongkan jika ingin "Hamba Allah")</label>
+              <input class="form-input" id="donasi-nama" placeholder="Nama Anda">
+            </div>
+            <button class="btn-primary" onclick="submitDonasiForm(${c.id}, '${esc(c.judul).replace(/'/g,"\\'")}')">Donasi Sekarang</button>
+          </div>
+        </div>
+      </div>
+    `);
+  } catch (e) {
+    setContent(subPageHeader('Error', '#donasi') + `<div class="content"><div class="empty-state">😕 Gagal memuat campaign</div></div>`);
+  }
+}
+
+async function submitDonasiForm(campaignId, campaignJudul) {
+  const nominal = Number(document.getElementById('donasi-nominal').value);
+  if (!nominal || nominal < 1000) { showToast('Masukkan nominal donasi yang valid'); return; }
+  const nama = document.getElementById('donasi-nama').value.trim();
+
+  try {
+    await api('submitDonasi', { campaignId, campaignJudul, jumlah: nominal, nama });
+    const info = STATE_DONASI.infoPembayaran || {};
+    setContent(subPageHeader('Konfirmasi Donasi', '#beranda') + `
+      <div class="content" style="margin-top:0;text-align:center;padding-top:20px;">
+        <div style="font-size:48px;">🤲</div>
+        <div style="font-size:17px;font-weight:800;margin-top:14px;">Jazakumullahu Khairan</div>
+        <div style="font-size:13px;color:var(--text-muted);margin-top:6px;">Donasi ${fmtRupiah(nominal)} untuk "${esc(campaignJudul)}" sudah tercatat. Silakan scan QRIS berikut untuk membayar:</div>
+        ${info.qrisUrl ? `<img src="${esc(info.qrisUrl)}" referrerpolicy="no-referrer" style="width:220px;margin:20px auto 0;border-radius:16px;box-shadow:0 4px 16px rgba(0,0,0,0.1);">` : ''}
+        <div class="list-card" style="margin-top:20px;text-align:left;">
+          <div><div class="list-card-title">Konfirmasi setelah bayar</div><div class="list-card-meta">Kirim bukti transfer ke Admin: ${esc(info.waAdmin || '-')}</div></div>
+        </div>
+        <button class="btn-primary" style="margin-top:20px;" onclick="location.hash='beranda'">Kembali ke Beranda</button>
+      </div>
+    `);
+  } catch (e) {
+    showToast('Gagal mengirim donasi, coba lagi');
+  }
+}
+
+// =======================================================================
+// KALKULATOR ZAKAT
+// =======================================================================
+let ZAKAT_STATE = { info: null, tab: 'fitrah' };
+
+async function renderZakat() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  setContent(subPageHeader('Kalkulator Zakat', '#beranda') + `
+    <div class="content" style="margin-top:0;" id="zakat-slot"><div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div>Memuat…</div></div>
+  `);
+  try {
+    ZAKAT_STATE.info = await api('getInfoZakat');
+    drawZakatTabs();
+  } catch (e) {
+    document.getElementById('zakat-slot').innerHTML = `<div class="empty-state">😕 Gagal memuat data zakat</div>`;
+  }
+}
+
+const ZAKAT_TABS = [
+  { key: 'fitrah', label: 'Fitrah' },
+  { key: 'penghasilan', label: 'Penghasilan' },
+  { key: 'emas', label: 'Emas & Perak' },
+  { key: 'niaga', label: 'Perdagangan' },
+  { key: 'pertanian', label: 'Pertanian' }
+];
+
+function drawZakatTabs() {
+  document.getElementById('zakat-slot').innerHTML = `
+    <div class="chip-row" style="margin-bottom:16px;">
+      ${ZAKAT_TABS.map(t => `<div class="chip ${ZAKAT_STATE.tab === t.key ? 'selected' : ''}" onclick="gantiTabZakat('${t.key}')">${t.label}</div>`).join('')}
+    </div>
+    <div id="zakat-form-slot"></div>
+  `;
+  drawZakatForm();
+}
+
+function gantiTabZakat(tab) {
+  ZAKAT_STATE.tab = tab;
+  drawZakatTabs();
+}
+
+function drawZakatForm() {
+  const slot = document.getElementById('zakat-form-slot');
+  const info = ZAKAT_STATE.info;
+  const nisabEmas = 85 * info.hargaEmas;
+
+  const forms = {
+    fitrah: `
+      <div class="form-group">
+        <label class="form-label">Jumlah Jiwa</label>
+        <input class="form-input" id="zk-jiwa" type="number" placeholder="Contoh: 4">
+      </div>
+      <div style="font-size:11.5px;color:var(--text-muted);margin-bottom:14px;">Dihitung 2,5 kg beras/jiwa × harga beras Rp${info.hargaBeras.toLocaleString('id-ID')}/kg</div>
+      <button class="btn-primary" onclick="hitungZakatFitrah()">Hitung Zakat Fitrah</button>
+    `,
+    penghasilan: `
+      <div class="form-group">
+        <label class="form-label">Penghasilan per Bulan</label>
+        <input class="form-input" id="zk-penghasilan" type="number" placeholder="Contoh: 8000000">
+      </div>
+      <div style="font-size:11.5px;color:var(--text-muted);margin-bottom:14px;">Nisab setahun: Rp${nisabEmas.toLocaleString('id-ID')} (setara 85 gram emas). Zakat 2,5% dari penghasilan jika ≥ nisab.</div>
+      <button class="btn-primary" onclick="hitungZakatPenghasilan()">Hitung Zakat Penghasilan</button>
+    `,
+    emas: `
+      <div class="form-group">
+        <label class="form-label">Berat Emas Dimiliki (gram)</label>
+        <input class="form-input" id="zk-emas" type="number" placeholder="Contoh: 100">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Berat Perak Dimiliki (gram)</label>
+        <input class="form-input" id="zk-perak" type="number" placeholder="Contoh: 0">
+      </div>
+      <div style="font-size:11.5px;color:var(--text-muted);margin-bottom:14px;">Nisab emas: 85 gram. Nisab perak: 595 gram. Zakat 2,5% dari nilai total jika ≥ nisab.</div>
+      <button class="btn-primary" onclick="hitungZakatEmas()">Hitung Zakat Emas & Perak</button>
+    `,
+    niaga: `
+      <div class="form-group">
+        <label class="form-label">Modal + Keuntungan Usaha</label>
+        <input class="form-input" id="zk-modal" type="number" placeholder="Contoh: 50000000">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Hutang Jangka Pendek (jika ada)</label>
+        <input class="form-input" id="zk-hutang" type="number" placeholder="Contoh: 5000000">
+      </div>
+      <div style="font-size:11.5px;color:var(--text-muted);margin-bottom:14px;">Nisab: Rp${nisabEmas.toLocaleString('id-ID')} (setara 85 gram emas). Zakat 2,5% dari (modal + untung − hutang) jika ≥ nisab.</div>
+      <button class="btn-primary" onclick="hitungZakatNiaga()">Hitung Zakat Perdagangan</button>
+    `,
+    pertanian: `
+      <div class="form-group">
+        <label class="form-label">Hasil Panen (kg)</label>
+        <input class="form-input" id="zk-panen" type="number" placeholder="Contoh: 800">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Harga per Kg</label>
+        <input class="form-input" id="zk-harga-panen" type="number" placeholder="Contoh: 6000">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Sumber Pengairan</label>
+        <div class="chip-row">
+          <div class="chip selected" id="zk-irigasi-chip" onclick="pilihPengairan('irigasi')">Irigasi (5%)</div>
+          <div class="chip" id="zk-tadah-chip" onclick="pilihPengairan('tadah')">Tadah Hujan (10%)</div>
+        </div>
+      </div>
+      <div style="font-size:11.5px;color:var(--text-muted);margin-bottom:14px;">Nisab: 653 kg gabah. Zakat dihitung dari nilai hasil panen jika berat ≥ nisab.</div>
+      <button class="btn-primary" onclick="hitungZakatPertanian()">Hitung Zakat Pertanian</button>
+    `
+  };
+
+  slot.innerHTML = `<div class="list-card" style="flex-direction:column;align-items:stretch;">${forms[ZAKAT_STATE.tab]}</div><div id="zakat-hasil-slot"></div>`;
+}
+
+let zakatPengairan = 'irigasi';
+function pilihPengairan(v) {
+  zakatPengairan = v;
+  document.getElementById('zk-irigasi-chip').classList.toggle('selected', v === 'irigasi');
+  document.getElementById('zk-tadah-chip').classList.toggle('selected', v === 'tadah');
+}
+
+function tampilkanHasilZakat(wajib, jumlah, keterangan) {
+  document.getElementById('zakat-hasil-slot').innerHTML = `
+    <div class="list-card" style="flex-direction:column;align-items:stretch;background:${wajib ? 'var(--primary-light)' : '#fff4e5'};margin-top:14px;">
+      <div style="font-size:12.5px;font-weight:700;color:${wajib ? 'var(--primary-dark)' : '#b45309'};">${wajib ? '✅ Wajib Zakat' : 'ℹ️ Belum Mencapai Nisab'}</div>
+      <div style="font-size:24px;font-weight:800;margin-top:6px;">${fmtRupiah(jumlah)}</div>
+      <div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;">${keterangan}</div>
+    </div>
+  `;
+}
+
+function hitungZakatFitrah() {
+  const jiwa = Number(document.getElementById('zk-jiwa').value) || 0;
+  if (jiwa <= 0) { showToast('Isi jumlah jiwa dulu'); return; }
+  const total = jiwa * 2.5 * ZAKAT_STATE.info.hargaBeras;
+  tampilkanHasilZakat(true, total, `${jiwa} jiwa × 2,5 kg × Rp${ZAKAT_STATE.info.hargaBeras.toLocaleString('id-ID')}/kg`);
+}
+
+function hitungZakatPenghasilan() {
+  const bulanan = Number(document.getElementById('zk-penghasilan').value) || 0;
+  if (bulanan <= 0) { showToast('Isi penghasilan dulu'); return; }
+  const nisabTahun = 85 * ZAKAT_STATE.info.hargaEmas;
+  const tahunan = bulanan * 12;
+  if (tahunan >= nisabTahun) {
+    tampilkanHasilZakat(true, bulanan * 0.025, `2,5% × Rp${bulanan.toLocaleString('id-ID')} (penghasilan sudah ≥ nisab setahun)`);
+  } else {
+    tampilkanHasilZakat(false, 0, `Penghasilan setahun (Rp${tahunan.toLocaleString('id-ID')}) belum mencapai nisab Rp${nisabTahun.toLocaleString('id-ID')}`);
+  }
+}
+
+function hitungZakatEmas() {
+  const emas = Number(document.getElementById('zk-emas').value) || 0;
+  const perak = Number(document.getElementById('zk-perak').value) || 0;
+  const nilaiEmas = emas * ZAKAT_STATE.info.hargaEmas;
+  const nilaiPerak = perak * ZAKAT_STATE.info.hargaPerak;
+  const wajibEmas = emas >= 85;
+  const wajibPerak = perak >= 595;
+  if (!wajibEmas && !wajibPerak) {
+    tampilkanHasilZakat(false, 0, `Belum mencapai nisab (85 gram emas atau 595 gram perak)`);
+    return;
+  }
+  const total = (wajibEmas ? nilaiEmas : 0) + (wajibPerak ? nilaiPerak : 0);
+  tampilkanHasilZakat(true, total * 0.025, `2,5% dari total nilai ${wajibEmas ? emas + ' gram emas ' : ''}${wajibPerak ? perak + ' gram perak' : ''}`);
+}
+
+function hitungZakatNiaga() {
+  const modal = Number(document.getElementById('zk-modal').value) || 0;
+  const hutang = Number(document.getElementById('zk-hutang').value) || 0;
+  const bersih = modal - hutang;
+  const nisab = 85 * ZAKAT_STATE.info.hargaEmas;
+  if (bersih >= nisab) {
+    tampilkanHasilZakat(true, bersih * 0.025, `2,5% × Rp${bersih.toLocaleString('id-ID')} (modal + untung − hutang)`);
+  } else {
+    tampilkanHasilZakat(false, 0, `Rp${bersih.toLocaleString('id-ID')} belum mencapai nisab Rp${nisab.toLocaleString('id-ID')}`);
+  }
+}
+
+function hitungZakatPertanian() {
+  const kg = Number(document.getElementById('zk-panen').value) || 0;
+  const harga = Number(document.getElementById('zk-harga-panen').value) || 0;
+  if (kg <= 0 || harga <= 0) { showToast('Isi hasil panen dan harga dulu'); return; }
+  const nilaiTotal = kg * harga;
+  const persen = zakatPengairan === 'irigasi' ? 0.05 : 0.10;
+  if (kg >= 653) {
+    tampilkanHasilZakat(true, nilaiTotal * persen, `${persen * 100}% × Rp${nilaiTotal.toLocaleString('id-ID')} (${kg} kg sudah ≥ nisab 653 kg)`);
+  } else {
+    tampilkanHasilZakat(false, 0, `Hasil panen ${kg} kg belum mencapai nisab 653 kg`);
+  }
+}
+
+// =======================================================================
+// INIT
+// =======================================================================
+window.addEventListener('load', () => {
+  const loadingEl = document.getElementById('loading-overlay');
+  const appEl = document.getElementById('app');
+  if (loadingEl) loadingEl.style.display = 'none';
+  if (appEl) appEl.style.display = 'block';
+  route();
+});
+</script>
