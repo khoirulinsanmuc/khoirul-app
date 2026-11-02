@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <title>Khoirul Insan App</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f9d58">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <style>
+    html, body { margin:0; height:100%; font-family:'Segoe UI',Tahoma,sans-serif; }
+    iframe { border:0; width:100%; height:100%; display:block; }
+    #pwa-overlay { position:fixed; inset:0; background:rgba(0,0,0,.45); backdrop-filter:blur(4px);
+      display:none; align-items:center; justify-content:center; z-index:9999; padding:20px; }
+    #pwa-overlay.show { display:flex; }
+    .pwa-box { background:#fff; border-radius:24px; padding:28px 24px 20px; max-width:320px; width:100%; text-align:center; }
+    .pwa-box img { width:72px; height:72px; border-radius:20px; box-shadow:0 8px 20px rgba(15,157,88,.3); }
+    .pwa-box h3 { margin:14px 0 6px; font-size:20px; color:#1a2b22; }
+    .pwa-box p { margin:0 0 18px; font-size:13px; line-height:1.5; color:#6b7a72; }
+    .pwa-install { width:100%; padding:14px; border:none; border-radius:14px; font-size:15px; font-weight:700;
+      color:#fff; background:linear-gradient(135deg,#0f9d58,#34c77b); cursor:pointer; }
+    .pwa-later { margin-top:12px; font-size:13px; color:#6b7a72; background:none; border:none; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <iframe src="https://script.google.com/macros/s/AKfycbzHoAecZzb3YW2It4WBcj9qEvf38HSP5IpRebZ7PhoQBA9jtLgNqM3RzGz190E04pPK/exec" allow="clipboard-write"></iframe>
+
+  <div id="pwa-overlay">
+    <div class="pwa-box">
+      <img src="/icons/icon-192.png" alt="Ikon">
+      <h3>Instal Aplikasi</h3>
+      <p id="pwa-text">Instal Khoirul Insan App ke layar utama untuk akses lebih cepat.</p>
+      <button class="pwa-install" id="pwa-install-btn">Instal Sekarang</button>
+      <button class="pwa-later" id="pwa-later-btn">Nanti Saja</button>
+    </div>
+  </div>
+
+<script>
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+
+  const overlay = document.getElementById('pwa-overlay');
+  const installBtn = document.getElementById('pwa-install-btn');
+  const KEY = 'pwa_tunda_sampai';
+  let deferredPrompt = null;
+
+  const sudahTerinstal = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  const ditunda = Number(localStorage.getItem(KEY) || 0) > Date.now();
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+  function tunda() {
+    localStorage.setItem(KEY, Date.now() + 7 * 24 * 3600 * 1000); // sembunyikan 7 hari
+    overlay.classList.remove('show');
+  }
+  document.getElementById('pwa-later-btn').onclick = tunda;
+
+  // Android / Chrome / Edge / desktop
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    deferredPrompt = e;
+    if (!sudahTerinstal && !ditunda) setTimeout(() => overlay.classList.add('show'), 1500);
+  });
+  installBtn.onclick = async () => {
+    if (!deferredPrompt) { tunda(); return; }
+    overlay.classList.remove('show');
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    deferredPrompt = null;
+  };
+  window.addEventListener('appinstalled', () => overlay.classList.remove('show'));
+
+  // iOS Safari tidak punya prompt instal, jadi tampilkan petunjuk manual
+  if (isIOS && !sudahTerinstal && !ditunda) {
+    document.getElementById('pwa-text').innerHTML =
+      'Ketuk tombol <b>Bagikan</b> (ikon kotak dengan panah) lalu pilih <b>Tambah ke Layar Utama</b>.';
+    installBtn.textContent = 'Mengerti';
+    installBtn.onclick = tunda;
+    setTimeout(() => overlay.classList.add('show'), 1500);
+  }
+</script>
+</body>
+</html>
